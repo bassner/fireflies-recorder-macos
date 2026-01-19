@@ -1,0 +1,50 @@
+name: FirefliesRecorder
+options:
+  bundleIdPrefix: dev.bassner
+  deploymentTarget:
+    macOS: "14.2"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+
+packages:
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: "2.0.0"
+
+targets:
+  FirefliesRecorder:
+    type: application
+    platform: macOS
+    sources:
+      - FirefliesRecorder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.bassner.ffrecorder
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: FirefliesRecorder/Info.plist
+        CODE_SIGN_ENTITLEMENTS: FirefliesRecorder/FirefliesRecorder.entitlements
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        LD_RUNPATH_SEARCH_PATHS:
+          - $(inherited)
+          - "@executable_path/../Frameworks"
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: NO
+      configs:
+        Debug:
+          SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+        Release:
+          SWIFT_OPTIMIZATION_LEVEL: "-O"
+    dependencies:
+      - package: KeyboardShortcuts
+    entitlements:
+      path: FirefliesRecorder/FirefliesRecorder.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.device.audio-input: true
+        com.apple.security.network.client: true
