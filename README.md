@@ -2,6 +2,8 @@
 
 A lightweight macOS menu bar app that records meetings by capturing system audio and microphone, then uploads to [Fireflies.ai](https://fireflies.ai) for automatic transcription.
 
+<img width="326" height="366" alt="CleanShot 2026-01-20 at 14 34 05" src="https://github.com/user-attachments/assets/13a4460a-cb24-43ee-9fe7-27f5dd66965d" />
+
 ## Features
 
 - **System Audio Capture** - Records all audio playing on your Mac (requires macOS 14.2+)
