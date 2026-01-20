@@ -60,6 +60,7 @@ On first launch, grant these permissions when prompted:
 |------------|-----|
 | **Microphone** | Record your voice |
 | **Screen Recording** | Capture system audio (macOS requirement for ScreenCaptureKit) |
+| **Keychain Access** | Securely store your Fireflies API key |
 
 ### 2. Add Your API Key
 
