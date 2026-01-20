@@ -1,8 +1,6 @@
 <p align="center">
   <img src="https://github.com/user-attachments/assets/13a4460a-cb24-43ee-9fe7-27f5dd66965d" width="280" alt="Fireflies Recorder">
   <img width="280" alt="Fireflies Recorder Recording State" src="https://github.com/user-attachments/assets/260f3c32-9dc5-4a2c-b7c4-da80fd0a9b7a" />
-  <img width="280" alt="Fireflies Recorder Processing State" src="https://github.com/user-attachments/assets/afcd96e4-8b57-495c-8a9f-bc2b0ec1d817" />
-
 </p>
 
 <h1 align="center">Fireflies Recorder for macOS</h1>
