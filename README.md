@@ -128,5 +128,5 @@ GPL v3 — see [LICENSE](LICENSE)
 ---
 
 <p align="center">
-  <sub>Built with Swift and ScreenCaptureKit</sub>
+  <sub>Made with ❤️ in Munich</sub>
 </p>
