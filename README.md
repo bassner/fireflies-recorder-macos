@@ -77,7 +77,7 @@ On first launch, grant these permissions when prompted:
 | Mute mic | Press `⌘⌥M` |
 | Open settings | Click menu bar icon → gear icon |
 
-Recordings are saved to `~/Documents/Fireflies Recordings/` and auto-uploaded if enabled.
+Recordings are saved to the app's container (`~/Library/Containers/dev.bassner.ffrecorder/Data/Documents/Fireflies Recordings/`) and auto-uploaded if enabled.
 
 ## Settings
 

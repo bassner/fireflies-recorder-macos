@@ -101,4 +101,4 @@ This project uses **xcodegen** to generate the Xcode project from `project.yml`.
 ## Known Limitations
 - System audio capture requires screen recording permission (macOS requirement)
 - App runs as menu bar only (no dock icon) via LSUIElement
-- Recordings saved to ~/Documents/Fireflies Recordings/
+- Recordings saved to app container: ~/Library/Containers/dev.bassner.ffrecorder/Data/Documents/Fireflies Recordings/
