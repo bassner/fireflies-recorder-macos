@@ -33,6 +33,7 @@ On first launch, you'll need to grant the following permissions:
 
 1. **Microphone Access** - Required to record your voice
 2. **Screen Recording** - Required to capture system audio (this is how macOS grants access to system audio via Core Audio Taps)
+3. **Keychain Access** - The app will store your Fireflies API key securely in the macOS Keychain
 
 ### Configure API Key
 
