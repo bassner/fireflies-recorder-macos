@@ -21,6 +21,8 @@
 
 Meeting bots are annoying. They join your calls, interrupt the flow, and make participants uncomfortable. **Fireflies Recorder** captures everything locally on your Mac—system audio from any app (Zoom, Meet, Teams, etc.) plus your microphone—then uploads to Fireflies.ai for transcription. No bots required.
 
+**Works for in-person meetings too.** Just open your laptop, hit record, and let it capture the room via your mic. Perfect for workshops, interviews, brainstorms, or any conversation you want transcribed.
+
 ## Features
 
 - **System Audio Capture** — Records all audio playing on your Mac using ScreenCaptureKit
