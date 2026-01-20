@@ -5,6 +5,9 @@
 //  Post-processes stereo recordings (L=mic, R=system) by normalizing
 //  each channel independently and merging to mono.
 //
+//  Memory-efficient streaming design: processes in chunks to handle
+//  long recordings without excessive memory usage.
+//
 
 import Foundation
 import AVFoundation
@@ -18,7 +21,11 @@ final class AudioPostProcessor {
     /// Channels below this are considered silent and won't be boosted
     private let silenceThresholdDB: Float = -50.0
 
+    /// Chunk size for streaming processing (1 second at 48kHz)
+    private let chunkSize: AVAudioFrameCount = 48000
+
     /// Process a stereo file (L=mic, R=system) into a normalized mono file
+    /// Uses streaming to minimize memory usage for long recordings
     /// - Parameters:
     ///   - inputURL: URL to stereo M4A file
     ///   - outputURL: URL for output mono M4A file (if nil, replaces input)
@@ -29,10 +36,10 @@ final class AudioPostProcessor {
 
         print("AudioPostProcessor: Processing \(inputURL.lastPathComponent)")
 
-        // Read the stereo file
+        // Open input file
         let inputFile = try AVAudioFile(forReading: inputURL)
         let format = inputFile.processingFormat
-        let frameCount = AVAudioFrameCount(inputFile.length)
+        let totalFrames = AVAudioFrameCount(inputFile.length)
 
         guard format.channelCount == 2 else {
             print("AudioPostProcessor: Input is not stereo, copying as-is")
@@ -42,26 +49,40 @@ final class AudioPostProcessor {
             return finalOutputURL
         }
 
-        print("AudioPostProcessor: Reading \(frameCount) frames at \(format.sampleRate) Hz")
+        let durationSeconds = Double(totalFrames) / format.sampleRate
+        print("AudioPostProcessor: Processing \(totalFrames) frames (\(String(format: "%.1f", durationSeconds)) seconds) at \(format.sampleRate) Hz")
 
-        // Read entire file into buffer
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
-            throw PostProcessorError.bufferCreationFailed
+        // PASS 1: Scan for peak levels (streaming, no storage)
+        print("AudioPostProcessor: Pass 1 - Scanning for peak levels...")
+        var leftPeak: Float = 0
+        var rightPeak: Float = 0
+
+        inputFile.framePosition = 0
+        var framesProcessed: AVAudioFrameCount = 0
+
+        while framesProcessed < totalFrames {
+            let framesToRead = min(chunkSize, totalFrames - framesProcessed)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else {
+                throw PostProcessorError.bufferCreationFailed
+            }
+
+            try inputFile.read(into: buffer, frameCount: framesToRead)
+
+            if let channelData = buffer.floatChannelData {
+                // Scan left channel
+                for i in 0..<Int(buffer.frameLength) {
+                    let absVal = abs(channelData[0][i])
+                    if absVal > leftPeak { leftPeak = absVal }
+                }
+                // Scan right channel
+                for i in 0..<Int(buffer.frameLength) {
+                    let absVal = abs(channelData[1][i])
+                    if absVal > rightPeak { rightPeak = absVal }
+                }
+            }
+
+            framesProcessed += buffer.frameLength
         }
-
-        try inputFile.read(into: buffer)
-        buffer.frameLength = frameCount
-
-        guard let channelData = buffer.floatChannelData else {
-            throw PostProcessorError.noAudioData
-        }
-
-        let leftChannel = channelData[0]   // Mic
-        let rightChannel = channelData[1]  // System
-
-        // Analyze each channel
-        let leftPeak = findPeakLevel(leftChannel, frameCount: Int(frameCount))
-        let rightPeak = findPeakLevel(rightChannel, frameCount: Int(frameCount))
 
         let leftPeakDB = linearToDecibels(leftPeak)
         let rightPeakDB = linearToDecibels(rightPeak)
@@ -72,47 +93,16 @@ final class AudioPostProcessor {
         // Calculate gain for each channel
         let leftGain = calculateGain(peakDB: leftPeakDB)
         let rightGain = calculateGain(peakDB: rightPeakDB)
-
-        print("AudioPostProcessor: Left gain: \(String(format: "%.2f", leftGain))x (\(String(format: "%.1f", linearToDecibels(leftGain))) dB)")
-        print("AudioPostProcessor: Right gain: \(String(format: "%.2f", rightGain))x (\(String(format: "%.1f", linearToDecibels(rightGain))) dB)")
-
-        // Create mono output buffer
-        let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: 1)!
-        guard let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frameCount) else {
-            throw PostProcessorError.bufferCreationFailed
-        }
-        monoBuffer.frameLength = frameCount
-
-        guard let monoData = monoBuffer.floatChannelData?[0] else {
-            throw PostProcessorError.noAudioData
-        }
-
-        // Mix normalized channels to mono
         let leftActive = leftPeakDB > silenceThresholdDB
         let rightActive = rightPeakDB > silenceThresholdDB
 
-        for frame in 0..<Int(frameCount) {
-            var sample: Float = 0
+        print("AudioPostProcessor: Left gain: \(String(format: "%.2f", leftGain))x, Right gain: \(String(format: "%.2f", rightGain))x")
 
-            if leftActive && rightActive {
-                // Both channels active - mix with equal weight after normalization
-                let normalizedLeft = leftChannel[frame] * leftGain
-                let normalizedRight = rightChannel[frame] * rightGain
-                sample = (normalizedLeft + normalizedRight) * 0.5
-            } else if leftActive {
-                // Only left (mic) active
-                sample = leftChannel[frame] * leftGain
-            } else if rightActive {
-                // Only right (system) active
-                sample = rightChannel[frame] * rightGain
-            }
-            // else: both silent, sample stays 0
+        // PASS 2: Normalize and mix to mono (streaming)
+        print("AudioPostProcessor: Pass 2 - Normalizing and mixing to mono...")
 
-            // Soft clip to prevent any overs
-            monoData[frame] = softClip(sample)
-        }
-
-        // Write output file
+        // Prepare output file
+        let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate, channels: 1)!
         let outputSettings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: format.sampleRate,
@@ -120,9 +110,7 @@ final class AudioPostProcessor {
             AVEncoderBitRateKey: 128000
         ]
 
-        // Remove existing output file if it exists
         try? FileManager.default.removeItem(at: finalOutputURL)
-
         let outputFile = try AVAudioFile(
             forWriting: finalOutputURL,
             settings: outputSettings,
@@ -130,7 +118,58 @@ final class AudioPostProcessor {
             interleaved: false
         )
 
-        try outputFile.write(from: monoBuffer)
+        // Reset input file position
+        inputFile.framePosition = 0
+        framesProcessed = 0
+
+        while framesProcessed < totalFrames {
+            let framesToRead = min(chunkSize, totalFrames - framesProcessed)
+
+            // Read stereo chunk
+            guard let stereoBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: framesToRead) else {
+                throw PostProcessorError.bufferCreationFailed
+            }
+            try inputFile.read(into: stereoBuffer, frameCount: framesToRead)
+
+            // Create mono output chunk
+            guard let monoBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: stereoBuffer.frameLength) else {
+                throw PostProcessorError.bufferCreationFailed
+            }
+            monoBuffer.frameLength = stereoBuffer.frameLength
+
+            guard let stereoData = stereoBuffer.floatChannelData,
+                  let monoData = monoBuffer.floatChannelData?[0] else {
+                throw PostProcessorError.noAudioData
+            }
+
+            // Mix normalized channels to mono
+            for frame in 0..<Int(stereoBuffer.frameLength) {
+                var sample: Float = 0
+
+                if leftActive && rightActive {
+                    let normalizedLeft = stereoData[0][frame] * leftGain
+                    let normalizedRight = stereoData[1][frame] * rightGain
+                    sample = (normalizedLeft + normalizedRight) * 0.5
+                } else if leftActive {
+                    sample = stereoData[0][frame] * leftGain
+                } else if rightActive {
+                    sample = stereoData[1][frame] * rightGain
+                }
+
+                monoData[frame] = softClip(sample)
+            }
+
+            // Write mono chunk
+            try outputFile.write(from: monoBuffer)
+
+            framesProcessed += stereoBuffer.frameLength
+
+            // Progress logging every 10%
+            let progress = Float(framesProcessed) / Float(totalFrames) * 100
+            if Int(progress) % 10 == 0 && Int(progress) != Int(Float(framesProcessed - stereoBuffer.frameLength) / Float(totalFrames) * 100) {
+                print("AudioPostProcessor: \(Int(progress))% complete")
+            }
+        }
 
         print("AudioPostProcessor: Wrote normalized mono file to \(finalOutputURL.lastPathComponent)")
 

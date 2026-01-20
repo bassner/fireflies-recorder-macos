@@ -35,7 +35,8 @@ FirefliesRecorder/
 ├── Managers/
 │   ├── RecordingState.swift         # Observable recording state
 │   ├── SettingsManager.swift        # UserDefaults + Keychain wrapper
-│   └── KeyboardShortcutManager.swift# Global hotkey setup
+│   ├── KeyboardShortcutManager.swift# Global hotkey setup
+│   └── ToastManager.swift           # Floating toast notifications
 │
 └── Resources/
     └── Assets.xcassets              # App icons
@@ -68,10 +69,22 @@ Uses ScreenCaptureKit instead of deprecated Core Audio Taps:
 3. API key stored securely in macOS Keychain
 
 ## Build & Run
-```bash
-# Regenerate Xcode project after adding/removing files
-xcodegen generate
 
+**ALWAYS use `./build.sh` to build the app.** Do NOT run xcodebuild directly.
+
+```bash
+./build.sh
+```
+
+This script:
+1. Generates the Xcode project via xcodegen
+2. Builds Release configuration
+3. Signs the app with the identity from `.build.local` (or ad-hoc if not set)
+4. Creates DMG at `build/FirefliesRecorder.dmg`
+
+For development in Xcode:
+```bash
+xcodegen generate
 open FirefliesRecorder.xcodeproj
 # Build with Cmd+B, Run with Cmd+R
 ```

@@ -7,6 +7,7 @@
 
 import Foundation
 import AVFoundation
+import CoreAudio
 
 protocol AudioCapture: AnyObject {
     var isCapturing: Bool { get }
@@ -58,6 +59,11 @@ final class MicrophoneCapture: AudioCapture {
             throw MicrophoneCaptureError.permissionDenied
         }
 
+        // Set the input device if specified
+        if let deviceUID = selectedDeviceUID {
+            try setInputDevice(uid: deviceUID)
+        }
+
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
 
@@ -75,6 +81,100 @@ final class MicrophoneCapture: AudioCapture {
         try audioEngine.start()
         isCapturing = true
         print("Microphone capture started")
+    }
+
+    /// Set the input device for the audio engine using CoreAudio
+    private func setInputDevice(uid: String) throws {
+        // Get the AudioDeviceID from the UID
+        guard let deviceID = getAudioDeviceID(forUID: uid) else {
+            throw MicrophoneCaptureError.deviceNotFound
+        }
+
+        // Get the audio unit from the input node
+        guard let audioUnit = audioEngine.inputNode.audioUnit else {
+            throw MicrophoneCaptureError.engineStartFailed
+        }
+
+        // Set the input device on the audio unit
+        var deviceIDVar = deviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceIDVar,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+
+        guard status == noErr else {
+            print("Failed to set input device: \(status)")
+            throw MicrophoneCaptureError.deviceNotFound
+        }
+
+        print("Set input device to: \(uid)")
+    }
+
+    /// Get AudioDeviceID from device UID string
+    private func getAudioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &dataSize
+        )
+
+        guard status == noErr else { return nil }
+
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+
+        status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &dataSize,
+            &deviceIDs
+        )
+
+        guard status == noErr else { return nil }
+
+        // Find device with matching UID
+        for deviceID in deviceIDs {
+            var uidPropertyAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceUID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+
+            var deviceUID: Unmanaged<CFString>?
+            var uidDataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+
+            let uidStatus = AudioObjectGetPropertyData(
+                deviceID,
+                &uidPropertyAddress,
+                0,
+                nil,
+                &uidDataSize,
+                &deviceUID
+            )
+
+            guard uidStatus == noErr, let cfUID = deviceUID?.takeRetainedValue() else { continue }
+
+            if (cfUID as String) == uid {
+                return deviceID
+            }
+        }
+
+        return nil
     }
 
     func stopCapturing() {

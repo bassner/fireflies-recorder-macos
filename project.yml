@@ -24,7 +24,8 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         INFOPLIST_FILE: FirefliesRecorder/Info.plist
         CODE_SIGN_ENTITLEMENTS: FirefliesRecorder/FirefliesRecorder.entitlements
-        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

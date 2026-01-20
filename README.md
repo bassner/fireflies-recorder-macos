@@ -68,13 +68,23 @@ This project uses [XcodeGen](https://github.com/yonaskolb/XcodeGen) for project 
 # Install XcodeGen
 brew install xcodegen
 
-# Generate Xcode project
-xcodegen generate
+# Build and create DMG
+./build.sh
+```
 
-# Build release
-xcodebuild -project FirefliesRecorder.xcodeproj -scheme FirefliesRecorder -configuration Release -derivedDataPath build/DerivedData build
+The script generates the Xcode project, builds, signs, and creates `build/FirefliesRecorder.dmg`.
+
+To keep macOS permissions consistent across builds, create `.build.local` with your signing identity:
+```bash
+echo 'SIGNING_IDENTITY="Apple Development: you@example.com (TEAMID)"' > .build.local
+```
+
+For development in Xcode:
+```bash
+xcodegen generate
+open FirefliesRecorder.xcodeproj
 ```
 
 ## License
 
-GNU GPLv3 - see [LICENSE](LICENSE) for details.
+MIT License - see [LICENSE](LICENSE) for details.

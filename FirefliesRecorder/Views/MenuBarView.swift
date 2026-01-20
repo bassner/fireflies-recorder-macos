@@ -37,14 +37,14 @@ struct MenuBarView: View {
 
             Divider()
 
-            // Permission warnings (only when not recording)
-            if !recordingState.isRecording && hasPermissionIssues {
+            // Permission warnings (only when idle and there are issues)
+            if currentStatus == .idle && hasPermissionIssues {
                 permissionWarningsView
                 Divider()
             }
 
-            // Audio levels (use audioRecorder levels directly)
-            if recordingState.isRecording {
+            // Audio levels (only during active recording)
+            if isActivelyRecording {
                 audioLevelsView
                 Divider()
             }
@@ -90,6 +90,18 @@ struct MenuBarView: View {
             // Reposition any active toast to bottom of screen
             ToastWindowController.reposition(belowMenuBar: false)
         }
+        .onChange(of: audioDeviceManager.inputDevices) { _, newDevices in
+            // Validate selected microphone still exists when device list changes
+            if let selectedID = settingsManager.selectedMicrophoneID,
+               !newDevices.contains(where: { $0.uid == selectedID }) {
+                // Selected device no longer exists - show warning (only when idle)
+                if currentStatus == .idle {
+                    showToast(message: "Mic disconnected", style: .error, duration: 3.0)
+                }
+                // Reset to system default
+                settingsManager.selectedMicrophoneID = nil
+            }
+        }
     }
 
     private var hasPermissionIssues: Bool {
@@ -103,31 +115,44 @@ struct MenuBarView: View {
         HStack {
             Image(systemName: "waveform.circle.fill")
                 .font(.title2)
-                .foregroundStyle(recordingState.isRecording ? .red : .secondary)
+                .foregroundStyle(isActivelyRecording ? .red : .secondary)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Fireflies Recorder")
                     .font(.headline)
 
-                if recordingState.isRecording {
+                // Status text based on current state
+                switch currentStatus {
+                case .recording:
                     Text(recordingState.formattedDuration)
                         .font(.caption)
                         .foregroundColor(.red)
                         .monospacedDigit()
-                } else if canRecord {
-                    Text("Ready to record")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("Permissions required")
+                case .processing:
+                    Text("Processing audio...")
                         .font(.caption)
                         .foregroundColor(.orange)
+                case .uploading:
+                    Text("Uploading to Fireflies...")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                case .idle:
+                    if settingsManager.canStartRecording {
+                        Text("Ready to record")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Permissions required")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
                 }
             }
 
             Spacer()
 
-            if recordingState.isRecording {
+            // Recording indicator
+            if isActivelyRecording {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 10, height: 10)
@@ -206,7 +231,7 @@ struct MenuBarView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .disabled(recordingState.isRecording)
+                .disabled(currentStatus != .idle)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -233,7 +258,7 @@ struct MenuBarView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
-                .disabled(recordingState.isRecording)
+                .disabled(currentStatus != .idle)
             }
         }
         .padding(.horizontal)
@@ -282,8 +307,53 @@ struct MenuBarView: View {
 
     // MARK: - Record Button
 
+    /// Whether the record button can be interacted with
+    /// Returns true only when we're idle (ready to start) or recording (can stop)
     private var canRecord: Bool {
-        recordingState.isRecording || settingsManager.canStartRecording
+        switch currentStatus {
+        case .idle:
+            // Can start a new recording if permissions allow
+            return settingsManager.canStartRecording
+        case .recording:
+            // Can stop the current recording
+            return true
+        case .processing, .uploading:
+            // Cannot interact while processing or uploading
+            return false
+        }
+    }
+
+    /// Whether we're currently recording (for button appearance)
+    private var isActivelyRecording: Bool {
+        currentStatus == .recording
+    }
+
+    /// Text for the record button based on current status
+    private var recordButtonText: String {
+        switch currentStatus {
+        case .idle:
+            return "Start Recording"
+        case .recording:
+            return "Stop Recording"
+        case .processing:
+            return "Processing..."
+        case .uploading:
+            return "Uploading..."
+        }
+    }
+
+    /// Icon for the record button based on current status
+    private var recordButtonIcon: String {
+        switch currentStatus {
+        case .idle:
+            return "record.circle"
+        case .recording:
+            return "stop.circle.fill"
+        case .processing:
+            return "gear.circle"
+        case .uploading:
+            return "arrow.up.circle"
+        }
     }
 
     private var recordingShortcutText: String {
@@ -293,23 +363,36 @@ struct MenuBarView: View {
     private var recordButtonView: some View {
         Button(action: toggleRecording) {
             HStack {
-                Image(systemName: recordingState.isRecording ? "stop.circle.fill" : "record.circle")
-                    .font(.title2)
-                    .foregroundStyle(recordingState.isRecording ? .red : (canRecord ? .primary : .secondary))
+                // Icon with appropriate styling based on status
+                Group {
+                    if currentStatus == .processing || currentStatus == .uploading {
+                        // Show spinning indicator for processing/uploading
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 24, height: 24)
+                    } else {
+                        Image(systemName: recordButtonIcon)
+                            .font(.title2)
+                            .foregroundStyle(isActivelyRecording ? .red : (canRecord ? .primary : .secondary))
+                    }
+                }
 
-                Text(recordingState.isRecording ? "Stop Recording" : "Start Recording")
+                Text(recordButtonText)
                     .font(.body.weight(.medium))
                     .foregroundStyle(canRecord ? .primary : .secondary)
 
                 Spacer()
 
-                Text(recordingShortcutText)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.2))
-                    .cornerRadius(4)
+                // Only show shortcut when we can actually use it
+                if currentStatus == .idle || currentStatus == .recording {
+                    Text(recordingShortcutText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.2))
+                        .cornerRadius(4)
+                }
             }
             .contentShape(Rectangle())
         }
@@ -457,8 +540,11 @@ struct MenuBarView: View {
     // MARK: - Actions
 
     private func toggleRecording() {
+        // Ignore if we're processing or uploading
+        guard canRecord else { return }
+
         Task {
-            if recordingState.isRecording {
+            if isActivelyRecording {
                 await stopRecording()
             } else {
                 await startRecording()
@@ -473,6 +559,16 @@ struct MenuBarView: View {
         // Verify we can actually record
         guard settingsManager.canStartRecording else {
             showToast(message: "Missing permissions", style: .error)
+            return
+        }
+
+        // Validate selected microphone exists (if a specific one is selected)
+        if settingsManager.recordMicrophone,
+           let selectedMicID = settingsManager.selectedMicrophoneID,
+           audioDeviceManager.device(withUID: selectedMicID) == nil {
+            // Selected microphone no longer exists
+            showToast(message: "Mic not found. Select a different one in menu bar.", style: .error, duration: 5.0)
+            errorMessage = "Selected mic not found\nChoose different mic"
             return
         }
 
@@ -497,14 +593,16 @@ struct MenuBarView: View {
     }
 
     private func stopRecording() async {
+        // Stop the timer immediately - don't wait for post-processing
+        let duration = recordingState.duration
+        recordingState.stopRecording()
+
         // Show processing status (post-processing happens in stopRecording)
         currentStatus = .processing
-        showToast(message: "Processing audio...", style: .processing, duration: 30)
+        showToast(message: "Processing audio...", style: .processing, duration: 60)
 
         do {
             let url = try await audioRecorder.stopRecording()
-            let duration = recordingState.duration
-            recordingState.stopRecording()
             lastRecordingURL = url
             currentStatus = .idle
 
@@ -554,11 +652,14 @@ struct MenuBarView: View {
 
     private func setupKeyboardShortcut() {
         KeyboardShortcutManager.shared.setToggleRecordingHandler { [self] in
-            toggleRecording()
+            // Only handle if we can actually record (not processing/uploading)
+            if canRecord {
+                toggleRecording()
+            }
         }
         KeyboardShortcutManager.shared.setToggleMicMuteHandler { [self] in
-            // Only allow muting while recording
-            if recordingState.isRecording {
+            // Only allow muting while actively recording
+            if isActivelyRecording {
                 toggleMicMute()
             }
         }

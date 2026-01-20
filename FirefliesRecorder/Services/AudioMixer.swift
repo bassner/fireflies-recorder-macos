@@ -5,6 +5,9 @@
 //  Records microphone and system audio to separate stereo channels (L=mic, R=system)
 //  Post-processing normalizes and merges to mono
 //
+//  Memory-efficient design: uses fixed-size ring buffers with bounded capacity
+//  to prevent unbounded memory growth during long recordings.
+//
 
 import Foundation
 import AVFoundation
@@ -33,9 +36,21 @@ final class AudioMixer {
     private var micConverter: AVAudioConverter?
     private var systemConverter: AVAudioConverter?
 
-    // Pending mono buffers for each source
-    private var pendingMicBuffer: AVAudioPCMBuffer?
-    private var pendingSystemBuffer: AVAudioPCMBuffer?
+    // MARK: - Ring Buffer Implementation
+    // Fixed-capacity ring buffers to prevent unbounded memory growth
+    // Max ~0.5 seconds of buffered audio per source (24000 samples at 48kHz)
+    private let maxBufferCapacity: AVAudioFrameCount = 24000
+    private let chunkSize: AVAudioFrameCount = 4800  // 0.1s chunks for writing
+
+    // Ring buffer storage - pre-allocated to avoid repeated allocations
+    private var micRingBuffer: [Float]
+    private var systemRingBuffer: [Float]
+    private var micWriteIndex: Int = 0
+    private var micReadIndex: Int = 0
+    private var micAvailableFrames: Int = 0
+    private var systemWriteIndex: Int = 0
+    private var systemReadIndex: Int = 0
+    private var systemAvailableFrames: Int = 0
     private let bufferLock = NSLock()
 
     // Track which sources are active
@@ -44,6 +59,9 @@ final class AudioMixer {
 
     init(outputURL: URL) {
         self.outputURL = outputURL
+        // Pre-allocate ring buffers
+        self.micRingBuffer = [Float](repeating: 0, count: Int(maxBufferCapacity))
+        self.systemRingBuffer = [Float](repeating: 0, count: Int(maxBufferCapacity))
     }
 
     func startWriting() throws {
@@ -62,6 +80,14 @@ final class AudioMixer {
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
+
+        // Reset ring buffers
+        micWriteIndex = 0
+        micReadIndex = 0
+        micAvailableFrames = 0
+        systemWriteIndex = 0
+        systemReadIndex = 0
+        systemAvailableFrames = 0
 
         isWriting = true
         print("AudioMixer: Started writing stereo file (L=mic, R=system)")
@@ -89,8 +115,8 @@ final class AudioMixer {
             guard let monoBuffer = self.convertToMono(buffer, isSystem: false) else { return }
 
             self.bufferLock.lock()
-            self.pendingMicBuffer = self.appendToBuffer(self.pendingMicBuffer, monoBuffer)
-            self.tryWriteStereoBuffer()
+            self.appendToMicRingBuffer(monoBuffer)
+            self.tryWriteChunks()
             self.bufferLock.unlock()
         }
     }
@@ -105,114 +131,131 @@ final class AudioMixer {
             guard let monoBuffer = self.convertToMono(buffer, isSystem: true) else { return }
 
             self.bufferLock.lock()
-            self.pendingSystemBuffer = self.appendToBuffer(self.pendingSystemBuffer, monoBuffer)
-            self.tryWriteStereoBuffer()
+            self.appendToSystemRingBuffer(monoBuffer)
+            self.tryWriteChunks()
             self.bufferLock.unlock()
         }
     }
 
-    // MARK: - Buffer Management
+    // MARK: - Ring Buffer Operations
 
-    /// Append new buffer to existing pending buffer
-    private func appendToBuffer(_ existing: AVAudioPCMBuffer?, _ new: AVAudioPCMBuffer) -> AVAudioPCMBuffer {
-        guard let existing = existing else { return new }
+    /// Append samples to mic ring buffer, overwriting oldest if full
+    private func appendToMicRingBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let data = buffer.floatChannelData?[0] else { return }
+        let frameCount = Int(buffer.frameLength)
+        let capacity = Int(maxBufferCapacity)
 
-        let totalFrames = existing.frameLength + new.frameLength
-        guard let combined = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: totalFrames) else {
-            return new
+        for i in 0..<frameCount {
+            micRingBuffer[micWriteIndex] = data[i]
+            micWriteIndex = (micWriteIndex + 1) % capacity
+
+            if micAvailableFrames < capacity {
+                micAvailableFrames += 1
+            } else {
+                // Buffer full - advance read index (drop oldest)
+                micReadIndex = (micReadIndex + 1) % capacity
+            }
         }
-
-        combined.frameLength = totalFrames
-
-        if let existingData = existing.floatChannelData?[0],
-           let newData = new.floatChannelData?[0],
-           let combinedData = combined.floatChannelData?[0] {
-            memcpy(combinedData, existingData, Int(existing.frameLength) * MemoryLayout<Float>.size)
-            memcpy(combinedData.advanced(by: Int(existing.frameLength)), newData, Int(new.frameLength) * MemoryLayout<Float>.size)
-        }
-
-        return combined
     }
 
-    /// Write stereo buffer with mic on left, system on right
-    private func tryWriteStereoBuffer() {
-        // Determine how many frames we can write
-        let micFrames = pendingMicBuffer?.frameLength ?? 0
-        let systemFrames = pendingSystemBuffer?.frameLength ?? 0
+    /// Append samples to system ring buffer, overwriting oldest if full
+    private func appendToSystemRingBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let data = buffer.floatChannelData?[0] else { return }
+        let frameCount = Int(buffer.frameLength)
+        let capacity = Int(maxBufferCapacity)
 
-        // If only one source is active, write what we have with silence on the other channel
-        let framesToWrite: AVAudioFrameCount
+        for i in 0..<frameCount {
+            systemRingBuffer[systemWriteIndex] = data[i]
+            systemWriteIndex = (systemWriteIndex + 1) % capacity
+
+            if systemAvailableFrames < capacity {
+                systemAvailableFrames += 1
+            } else {
+                // Buffer full - advance read index (drop oldest)
+                systemReadIndex = (systemReadIndex + 1) % capacity
+            }
+        }
+    }
+
+    /// Read samples from mic ring buffer
+    private func readFromMicRingBuffer(count: Int) -> [Float] {
+        let capacity = Int(maxBufferCapacity)
+        let actualCount = min(count, micAvailableFrames)
+        var result = [Float](repeating: 0, count: count)
+
+        for i in 0..<actualCount {
+            result[i] = micRingBuffer[(micReadIndex + i) % capacity]
+        }
+
+        // Advance read index
+        micReadIndex = (micReadIndex + actualCount) % capacity
+        micAvailableFrames -= actualCount
+
+        return result
+    }
+
+    /// Read samples from system ring buffer
+    private func readFromSystemRingBuffer(count: Int) -> [Float] {
+        let capacity = Int(maxBufferCapacity)
+        let actualCount = min(count, systemAvailableFrames)
+        var result = [Float](repeating: 0, count: count)
+
+        for i in 0..<actualCount {
+            result[i] = systemRingBuffer[(systemReadIndex + i) % capacity]
+        }
+
+        // Advance read index
+        systemReadIndex = (systemReadIndex + actualCount) % capacity
+        systemAvailableFrames -= actualCount
+
+        return result
+    }
+
+    /// Write chunks when we have enough data
+    /// Key design: write aggressively to prevent buffer accumulation
+    /// If one source is behind, pad with silence rather than waiting
+    private func tryWriteChunks() {
+        let chunk = Int(chunkSize)
+
+        // Determine how many frames we can write
+        // Key change: write when EITHER source has a full chunk (not both)
+        // This prevents one fast source from causing unbounded accumulation
+        let framesToWrite: Int
         if hasMicSource && hasSystemSource {
-            // Both sources - write minimum common length
-            framesToWrite = min(micFrames, systemFrames)
+            // Both sources active - write when either has enough, up to chunk size
+            let maxAvailable = max(micAvailableFrames, systemAvailableFrames)
+            framesToWrite = min(maxAvailable, chunk)
         } else if hasMicSource {
-            // Only mic - write mic with silence on right
-            framesToWrite = micFrames
+            framesToWrite = min(micAvailableFrames, chunk)
         } else if hasSystemSource {
-            // Only system - write system with silence on left
-            framesToWrite = systemFrames
+            framesToWrite = min(systemAvailableFrames, chunk)
         } else {
             return
         }
 
-        guard framesToWrite > 0 else { return }
+        // Write in chunks - but allow partial writes to prevent accumulation
+        guard framesToWrite >= chunk else { return }
 
         // Create stereo buffer
-        guard let stereoBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: framesToWrite) else { return }
-        stereoBuffer.frameLength = framesToWrite
+        guard let stereoBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(framesToWrite)) else { return }
+        stereoBuffer.frameLength = AVAudioFrameCount(framesToWrite)
 
         guard let stereoData = stereoBuffer.floatChannelData else { return }
-        let leftChannel = stereoData[0]  // Mic
-        let rightChannel = stereoData[1] // System
 
-        // Fill left channel (mic)
-        if let micBuffer = pendingMicBuffer, let micData = micBuffer.floatChannelData?[0] {
-            let framesToCopy = min(framesToWrite, micBuffer.frameLength)
-            memcpy(leftChannel, micData, Int(framesToCopy) * MemoryLayout<Float>.size)
-            // Fill remainder with silence if needed
-            if framesToCopy < framesToWrite {
-                memset(leftChannel.advanced(by: Int(framesToCopy)), 0, Int(framesToWrite - framesToCopy) * MemoryLayout<Float>.size)
-            }
-        } else {
-            // No mic data - fill with silence
-            memset(leftChannel, 0, Int(framesToWrite) * MemoryLayout<Float>.size)
+        // Fill left channel (mic) - pad with silence if not enough data
+        let micData = hasMicSource ? readFromMicRingBuffer(count: framesToWrite) : [Float](repeating: 0, count: framesToWrite)
+        for i in 0..<framesToWrite {
+            stereoData[0][i] = micData[i]
         }
 
-        // Fill right channel (system)
-        if let systemBuffer = pendingSystemBuffer, let systemData = systemBuffer.floatChannelData?[0] {
-            let framesToCopy = min(framesToWrite, systemBuffer.frameLength)
-            memcpy(rightChannel, systemData, Int(framesToCopy) * MemoryLayout<Float>.size)
-            // Fill remainder with silence if needed
-            if framesToCopy < framesToWrite {
-                memset(rightChannel.advanced(by: Int(framesToCopy)), 0, Int(framesToWrite - framesToCopy) * MemoryLayout<Float>.size)
-            }
-        } else {
-            // No system data - fill with silence
-            memset(rightChannel, 0, Int(framesToWrite) * MemoryLayout<Float>.size)
+        // Fill right channel (system) - pad with silence if not enough data
+        let systemData = hasSystemSource ? readFromSystemRingBuffer(count: framesToWrite) : [Float](repeating: 0, count: framesToWrite)
+        for i in 0..<framesToWrite {
+            stereoData[1][i] = systemData[i]
         }
 
         // Write to file
         writeToFile(stereoBuffer)
-
-        // Trim pending buffers
-        pendingMicBuffer = trimBuffer(pendingMicBuffer, removeFrames: framesToWrite)
-        pendingSystemBuffer = trimBuffer(pendingSystemBuffer, removeFrames: framesToWrite)
-    }
-
-    /// Remove processed frames from the front of a buffer
-    private func trimBuffer(_ buffer: AVAudioPCMBuffer?, removeFrames: AVAudioFrameCount) -> AVAudioPCMBuffer? {
-        guard let buffer = buffer else { return nil }
-        let remaining = buffer.frameLength - removeFrames
-        guard remaining > 0 else { return nil }
-
-        guard let trimmed = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: remaining) else { return nil }
-        trimmed.frameLength = remaining
-
-        if let srcData = buffer.floatChannelData?[0], let dstData = trimmed.floatChannelData?[0] {
-            memcpy(dstData, srcData.advanced(by: Int(removeFrames)), Int(remaining) * MemoryLayout<Float>.size)
-        }
-
-        return trimmed
     }
 
     /// Flush any remaining audio when stopping
@@ -221,41 +264,28 @@ final class AudioMixer {
         defer { bufferLock.unlock() }
 
         // Write whatever we have left
-        let micFrames = pendingMicBuffer?.frameLength ?? 0
-        let systemFrames = pendingSystemBuffer?.frameLength ?? 0
-        let framesToWrite = max(micFrames, systemFrames)
+        let framesToWrite = max(micAvailableFrames, systemAvailableFrames)
 
         guard framesToWrite > 0 else { return }
 
-        guard let stereoBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: framesToWrite) else { return }
-        stereoBuffer.frameLength = framesToWrite
+        guard let stereoBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(framesToWrite)) else { return }
+        stereoBuffer.frameLength = AVAudioFrameCount(framesToWrite)
 
         guard let stereoData = stereoBuffer.floatChannelData else { return }
 
         // Fill left channel (mic)
-        if let micBuffer = pendingMicBuffer, let micData = micBuffer.floatChannelData?[0] {
-            memcpy(stereoData[0], micData, Int(micBuffer.frameLength) * MemoryLayout<Float>.size)
-            if micBuffer.frameLength < framesToWrite {
-                memset(stereoData[0].advanced(by: Int(micBuffer.frameLength)), 0, Int(framesToWrite - micBuffer.frameLength) * MemoryLayout<Float>.size)
-            }
-        } else {
-            memset(stereoData[0], 0, Int(framesToWrite) * MemoryLayout<Float>.size)
+        let micData = readFromMicRingBuffer(count: framesToWrite)
+        for i in 0..<framesToWrite {
+            stereoData[0][i] = micData[i]
         }
 
         // Fill right channel (system)
-        if let systemBuffer = pendingSystemBuffer, let systemData = systemBuffer.floatChannelData?[0] {
-            memcpy(stereoData[1], systemData, Int(systemBuffer.frameLength) * MemoryLayout<Float>.size)
-            if systemBuffer.frameLength < framesToWrite {
-                memset(stereoData[1].advanced(by: Int(systemBuffer.frameLength)), 0, Int(framesToWrite - systemBuffer.frameLength) * MemoryLayout<Float>.size)
-            }
-        } else {
-            memset(stereoData[1], 0, Int(framesToWrite) * MemoryLayout<Float>.size)
+        let systemData = readFromSystemRingBuffer(count: framesToWrite)
+        for i in 0..<framesToWrite {
+            stereoData[1][i] = systemData[i]
         }
 
         writeToFile(stereoBuffer)
-
-        pendingMicBuffer = nil
-        pendingSystemBuffer = nil
     }
 
     // MARK: - Conversion

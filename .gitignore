@@ -34,3 +34,4 @@ Packages/
 
 # Archives
 *.xcarchive
+.build.local
